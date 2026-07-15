@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>End-of-Turn Detection — Summary</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 860px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.55; }
+  h1 { font-size: 1.7rem; border-bottom: 3px solid #222; padding-bottom: 8px; }
+  h2 { font-size: 1.25rem; margin-top: 2.2rem; color: #111; border-left: 4px solid #444; padding-left: 10px; }
+  h3 { font-size: 1.05rem; margin-top: 1.4rem; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.92rem; }
+  th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+  th { background: #f2f2f2; }
+  .metric-good { color: #0a7a2f; font-weight: 600; }
+  .metric-bad { color: #b03a2e; }
+  .callout { background: #fff8e1; border-left: 4px solid #e0a800; padding: 10px 14px; margin: 1rem 0; }
+  code, .mono { font-family: "SFMono-Regular", Consolas, Menlo, monospace; background: #f4f4f4; padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }
+  .badge { display: inline-block; background: #222; color: #fff; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; margin-left: 8px; }
+  footer { margin-top: 3rem; font-size: 0.85rem; color: #777; border-top: 1px solid #ddd; padding-top: 12px; }
+</style>
+</head>
+<body>
+
+<h1>End-of-Turn Detection <span class="badge">Plivo AI/ML Track</span></h1>
+<p>Roll no: <strong>23ME31030</strong> — Approach summary, honest scoring, and what I'd do next.</p>
+
+<h2>The task</h2>
+<p>Predict, at every silence pause in a user's turn, the probability <span class="mono">p_eot</span> that the turn is truly over — using <strong>only</strong> audio before the pause starts (causality constraint). Scored by mean response delay at ≤5% false-cutoff rate, against a silence-only baseline of ~1600&nbsp;ms.</p>
+
+<h2>Approach</h2>
+<p>I extended the causal feature extractor in <code>features.py</code> with prosodic cues grounded in how speech naturally signals turn completion:</p>
+<ul>
+  <li><strong>Pitch (F0) behavior</strong>: final voiced pitch relative to the speaker's own median, and F0 slope over the last voiced run — statements tend to fall in pitch; continuations often stay level or rise.</li>
+  <li><strong>Final-syllable lengthening</strong>: duration of the last voiced run relative to the turn's average voiced-run duration.</li>
+  <li><strong>Energy decay</strong>: short-term energy slope and final-frame energy relative to the segment mean.</li>
+  <li><strong>Voicing ratio &amp; trailing silence</strong>: how much of the pre-pause window was voiced vs. silent.</li>
+  <li><strong>Turn-history features</strong>: number, mean, and std of <em>already-completed</em> prior pauses in the same turn (legally causal — their <span class="mono">pause_end</span> occurred before the current pause's <span class="mono">pause_start</span>).</li>
+  <li><strong>Speaking rate</strong> over the whole turn so far, and the pause's position in time.</li>
+</ul>
+<p>These 12 features feed a <span class="mono">GradientBoostingClassifier</span> (150 trees, depth 2, lr 0.08), trained on English + Hindi pauses combined so the model generalizes across languages (the hidden test set is mostly Hindi).</p>
+
+<h2>A mistake I caught — and corrected</h2>
+<div class="callout">
+  <strong>Overfitting via data leakage on the "final" refit.</strong> My training script does a proper held-out-turn split internally for a sanity check, but then refits on <em>all</em> data before saving the model (matching how you'd actually ship a final model). When I first scored <span class="mono">predict.py</span>'s output, I was scoring the model on the same turns it had just been refit on — giving an inflated AUC of 0.93–0.95 and a delay of ~600&nbsp;ms.
+  <br><br>
+  I re-evaluated on a proper held-out split (25% of turns, grouped by <span class="mono">turn_id</span> so no turn's pauses leak across the split) that the model never saw during fitting. That gave the honest numbers below — meaningfully worse than the inflated ones, but still a real, decisive win over baseline.
+</div>
+
+<h2>Results (honest, held-out)</h2>
+<table>
+  <tr><th>System</th><th>AUC</th><th>Mean response delay</th><th>Interrupted turns</th></tr>
+  <tr><td>Silence-only baseline</td><td>0.514</td><td>1600 ms</td><td>0.0%</td></tr>
+  <tr><td><strong>My model (held-out turns)</strong></td><td class="metric-good">0.681</td><td class="metric-good">1024 ms</td><td>4.0%</td></tr>
+</table>
+<p><strong>~36% delay reduction</strong> vs. baseline, at a lower interruption rate than the 5% budget allows.</p>
+
+<h3>Hyperparameter sweep (same held-out split)</h3>
+<table>
+  <tr><th>Config</th><th>AUC</th><th>Delay</th><th>Cutoff</th></tr>
+  <tr><td>n_estimators=150, depth=2, lr=0.08 (final)</td><td>0.681</td><td class="metric-good">1024 ms</td><td>4.0%</td></tr>
+  <tr><td>n_estimators=40, depth=2, lr=0.08</td><td>0.681</td><td>1060 ms</td><td>4.0%</td></tr>
+  <tr><td>n_estimators=60, depth=1, lr=0.1</td><td>0.693</td><td>1132 ms</td><td>4.0%</td></tr>
+  <tr><td>n_estimators=25, depth=2, lr=0.1</td><td>0.689</td><td>1141 ms</td><td>4.0%</td></tr>
+</table>
+<p>Interesting finding: slightly higher AUC did not translate to lower delay in every config — the delay metric depends on the specific threshold/delay operating point chosen at the 5% cutoff budget, not just overall ranking quality. The original, larger configuration was kept since it won on the metric that actually matters.</p>
+
+<h2>Why the score plateaus where it does</h2>
+<p>Held-out turn accuracy (0.641) is only modestly above chance (0.597). With ~250 pauses per language and 12 features, the model has limited data to learn subtle prosodic distinctions, and prosody alone can't fully resolve genuinely ambiguous pauses — e.g. a speaker trailing off with falling pitch mid-thought looks identical, acoustically, to a real ending. Closing this gap likely needs either more training turns, or a different signal entirely (see below).</p>
+
+<h2>What I'd do with one more day</h2>
+<p>Add a lexical/semantic completion signal — e.g. a lightweight causal model scoring whether the transcript-so-far reads like a syntactically complete utterance — combined with the existing prosodic features. Prosody says <em>how</em> something was said; completion-likelihood says <em>whether it needs to say more</em>, and the two are complementary. I'd also gather more training turns per language to reduce the variance visible in the held-out accuracy.</p>
+
+<h2>Human vs. AI-assisted work</h2>
+<p>I used Claude to help scaffold the feature-extraction code, the train/predict split (matching the required non-refitting <code>predict.py</code> interface), and to catch the training/evaluation leakage bug described above. The choice of which prosodic cues to engineer, the decision to train on both languages jointly, the hyperparameter comparison, and the honest re-evaluation on held-out turns were driven interactively during the session, with Claude implementing and running each iteration and me deciding what to try next based on the numbers.</p>
+
+<footer>
+  Full details: <code>RUNLOG.md</code> (graded, per-run reasoning) and <code>NOTES.md</code> (fitness summary, plateau explanation).
+</footer>
+
+</body>
+</html>
