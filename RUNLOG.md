@@ -76,3 +76,24 @@
   signal) rather than a heuristic this coarse.
 - Reverted to original model.pkl (Run 2/3 config) as final submission -
   it remains the best result across all 5 runs: 1024ms vs 1600ms baseline.
+
+## Run 6: Stability check (5 seeds) + Hindi-only vs combined comparison
+- Multi-split check (same combined model/features, 5 different random
+  GroupShuffleSplit seeds): delays = 1024, 900, 963, 1000, 1110ms
+  (mean ~1000ms), AUC range 0.602-0.705. Confirms the originally reported
+  1024ms is representative, not a lucky/unlucky split.
+- Hindi-only vs combined, both scored on Hindi held-out turns only:
+  combined model: AUC=0.714, delay=933ms. Hindi-only-trained model:
+  AUC=0.629, delay=800ms (better delay despite worse AUC - same
+  AUC-vs-operating-point mismatch seen with the recitation guard in Run 5).
+- Hindi held-out set is very small (~25 turns), so this single comparison
+  isn't strong enough evidence to switch models this late - a real effect
+  here vs. noise from a small sample can't be distinguished without more
+  splits. Flagging as a promising direction rather than acting on it: a
+  more rigorous multi-seed Hindi-only vs combined comparison would be the
+  first thing I'd do with more time, given the hidden test set is mostly
+  Hindi.
+- FINAL DECISION: kept the original combined model.pkl (Run 2/3 config)
+  as the submission. It is well-validated (5-seed average ~1000ms) and
+  switching now on a single noisy comparison would trade a solid result
+  for an unvalidated one.
