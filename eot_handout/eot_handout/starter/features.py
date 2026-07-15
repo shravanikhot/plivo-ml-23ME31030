@@ -177,3 +177,22 @@ FEATURE_NAMES = [
     "speaking_rate", "n_prev_pauses", "mean_prev_pause_dur", "std_prev_pause_dur",
     "pause_start_time",
 ]
+
+
+def extract_features_v2(x, sr, pause_start, pause_index, prev_pause_durs):
+    """v1 features + rhythm-of-listing features (last pause duration,
+    and regularity of recent prior pauses - both purely from COMPLETED
+    prior pauses, fully causal)."""
+    base = extract_features(x, sr, pause_start, pause_index, prev_pause_durs)
+
+    last_pause_dur = float(prev_pause_durs[-1]) if prev_pause_durs else 0.0
+    if len(prev_pause_durs) >= 2:
+        recent = prev_pause_durs[-3:]
+        recent_pause_regularity = float(np.std(recent))  # low = metronomic listing
+    else:
+        recent_pause_regularity = 0.0
+
+    return np.concatenate([base, [last_pause_dur, recent_pause_regularity]]).astype(np.float32)
+
+
+FEATURE_NAMES_V2 = FEATURE_NAMES + ["last_pause_dur", "recent_pause_regularity"]
